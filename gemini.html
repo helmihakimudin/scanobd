@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ELM327 OBD2 Snapshot & Diagnostics</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#0f172a',
+                        cardBg: '#1e293b',
+                        accent: '#3b82f6',
+                        accentHover: '#2563eb'
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        /* Custom scrollbar for terminal and tables */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+</head>
+<body class="bg-darkBg text-slate-100 min-h-screen flex flex-col justify-between selection:bg-blue-500 selection:text-white">
+
+    <header class="bg-cardBg border-b border-slate-800 sticky top-0 z-50 shadow-md">
+        <div class="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
+            <div class="flex items-center space-x-3">
+                <div class="bg-blue-600/20 text-blue-400 p-2.5 rounded-xl border border-blue-500/30">
+                    <i class="fa-solid fa-gauge-high text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                        ELM327 OBD2 Snapshot
+                        <span class="text-xs bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full border border-blue-500/30 font-normal">Web BLE</span>
+                    </h1>
+                    <p class="text-xs text-slate-400">Capture kondisi kendaraan & analisis byte hex OBD-II</p>
+                </div>
+            </div>
+
+            <!-- Connection Controls -->
+            <div class="flex items-center gap-3 w-full sm:w-auto justify-end">
+                <div id="statusIndicator" class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs font-medium">
+                    <span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" id="statusDot"></span>
+                    <span id="statusText" class="text-slate-300">Disconnected</span>
+                </div>
+                <button id="connectBtn" onclick="toggleConnection()" class="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 active:scale-95 text-white px-4 py-2 rounded-lg font-medium text-sm transition shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2">
+                    <i class="fa-brands fa-bluetooth-b"></i> <span id="connectBtnText">Connect OBD2</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- Left Column: Condition Capture & Controls (1 span) -->
+        <div class="space-y-6 lg:col-span-1">
+            
+            <!-- Condition Selector Card -->
+            <div class="bg-cardBg border border-slate-800 rounded-2xl p-5 shadow-xl">
+                <h2 class="text-base font-semibold text-white mb-4 flex items-center gap-2">
+                    <i class="fa-solid fa-sliders text-blue-400"></i> Snapshot Kondisi
+                </h2>
+                
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1.5">Pilih Kondisi Kendaraan</label>
+                        <select id="conditionSelect" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 transition">
+                            <option value="Mesin Mati">🛑 Mesin Mati (Key ON, Engine OFF)</option>
+                            <option value="Idle">⏱️ Idle (Mesin Nyala, Diam)</option>
+                            <option value="Digas">⚡ Digas (RPM Naik / Gas Ditekan)</option>
+                            <option value="Jalan">🛣️ Jalan (Kendaraan Bergerak)</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1.5">Preset Query / PID</label>
+                        <select id="presetSelect" onchange="applyPreset()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 transition">
+                            <option value="010C">Engine RPM (01 0C)</option>
+                            <option value="010D">Vehicle Speed (01 0D)</option>
+                            <option value="0105">Coolant Temperature (01 05)</option>
+                            <option value="0104">Calculated Engine Load (01 04)</option>
+                            <option value="010F">Intake Air Temp (01 0F)</option>
+                            <option value="0111">Throttle Position (01 11)</option>
+                            <option value="ATZ">Reset ELM327 (ATZ)</option>
+                            <option value="ATE0">Echo Off (ATE0)</option>
+                            <option value="ATSP0">Auto Protocol (ATSP0)</option>
+                            <option value="CUSTOM">Custom AT Command</option>
+                        </select>
+                    </div>
+
+                    <div id="customCommandContainer" class="hidden">
+                        <label class="block text-xs font-medium text-slate-400 mb-1.5">Custom AT / OBD Command</label>
+                        <div class="flex gap-2">
+                            <input type="text" id="customInput" placeholder="Contoh: 010C atau ATDP" class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-blue-500 uppercase">
+                        </div>
+                    </div>
+
+                    <button onclick="captureSnapshot()" id="captureBtn" disabled class="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed active:scale-95 text-white font-medium py-3 rounded-xl transition shadow-lg shadow-emerald-600/10 flex items-center justify-center gap-2 text-sm">
+                        <i class="fa-solid fa-camera"></i> Capture Snapshot Kondisi
+                    </button>
+                </div>
+            </div>
+
+            <!-- Quick Stats / Info Card -->
+            <div class="bg-cardBg border border-slate-800 rounded-2xl p-5 shadow-xl">
+                <h3 class="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                    <i class="fa-solid fa-circle-info text-blue-400"></i> Panduan Singkat
+                </h3>
+                <ul class="text-xs text-slate-400 space-y-2 leading-relaxed">
+                    <li>1. Pastikan Bluetooth ELM327 sudah di-pairing dengan perangkat Anda.</li>
+                    <li>2. Klik <b>Connect OBD2</b> dan pilih perangkat ELM327 / Serial.</li>
+                    <li>3. Pilih kondisi kendaraan di dropdown, lalu tekan <b>Capture Snapshot</b> untuk membaca respon hex aktual.</li>
+                    <li>4. Bandingkan hasil byte hex antar kondisi untuk analisis PID.</li>
+                </ul>
+            </div>
+
+        </div>
+
+        <!-- Right Column: Terminal & Snapshot Table (2 span) -->
+        <div class="space-y-6 lg:col-span-2 flex flex-col">
+
+            <!-- Snapshot Data Table Card -->
+            <div class="bg-cardBg border border-slate-800 rounded-2xl p-5 shadow-xl flex-grow flex flex-col">
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+                    <div>
+                        <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-table-cells text-blue-400"></i> Log Snapshot Tersimpan
+                        </h2>
+                        <p class="text-xs text-slate-400" id="snapshotCount">Total snapshot: 0</p>
+                    </div>
+                    <div class="flex items-center gap-2 w-full sm:w-auto">
+                        <button onclick="exportCSV()" class="flex-1 sm:flex-none bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-700 transition flex items-center justify-center gap-1.5">
+                            <i class="fa-solid fa-download text-blue-400"></i> Export CSV
+                        </button>
+                        <button onclick="clearSnapshots()" class="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-3 py-1.5 rounded-lg text-xs font-medium border border-rose-500/20 transition flex items-center gap-1.5">
+                            <i class="fa-solid fa-trash"></i> Clear
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Table Container -->
+                <div class="overflow-x-auto rounded-xl border border-slate-800 flex-grow max-h-[360px]">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="bg-slate-900/90 text-slate-400 text-xs uppercase sticky top-0 border-b border-slate-800">
+                            <tr>
+                                <th class="p-3">Waktu</th>
+                                <th class="p-3">Kondisi</th>
+                                <th class="p-3">Command</th>
+                                <th class="p-3">Raw Hex Response</th>
+                                <th class="p-3">Analisis / Arti</th>
+                                <th class="p-3 text-center">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="snapshotTableBody" class="divide-y divide-slate-800/60 text-xs font-mono">
+                            <!-- Populated dynamically -->
+                            <tr id="emptyRow">
+                                <td colspan="6" class="p-8 text-center text-slate-500 font-sans">
+                                    Belum ada data snapshot. Hubungkan perangkat dan lakukan capture.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- UART Terminal Log Card -->
+            <div class="bg-cardBg border border-slate-800 rounded-2xl p-5 shadow-xl">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-sm font-semibold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-terminal text-blue-400"></i> Live UART Console Log
+                    </h3>
+                    <button onclick="clearTerminal()" class="text-xs text-slate-400 hover:text-white transition">Clear Log</button>
+                </div>
+                <div id="terminal" class="bg-slate-950 border border-slate-800 rounded-xl p-3 h-36 overflow-y-auto font-mono text-xs text-slate-300 space-y-1">
+                    <div class="text-slate-500">// Menunggu koneksi Bluetooth ELM327...</div>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+    <footer class="bg-cardBg border-t border-slate-800 py-4 text-center text-xs text-slate-500">
+        <p>ELM327 OBD2 Web Bluetooth Diagnostic Suite &bull; Compatible with Chrome, Edge, and Opera</p>
+    </footer>
+
+    <!-- Custom Notification / Message Box (No alert()) -->
+    <div id="msgModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-cardBg border border-slate-700 rounded-2xl max-w-sm w-full p-6 shadow-2xl text-center space-y-4">
+            <div id="msgIcon" class="w-12 h-12 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center mx-auto text-xl border border-blue-500/30">
+                <i class="fa-solid fa-info"></i>
+            </div>
+            <div>
+                <h3 id="msgTitle" class="text-lg font-bold text-white">Informasi</h3>
+                <p id="msgBody" class="text-sm text-slate-300 mt-1">Pesan sistem...</p>
+            </div>
+            <button onclick="closeModal()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-xl transition text-sm">
+                Mengerti
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // Bluetooth & Serial Variables
+        let bluetoothDevice = null;
+        let bluetoothServer = null;
+        let uartService = null;
+        let rxCharacteristic = null;
+        let txCharacteristic = null;
+        let readBuffer = "";
+        let isConnected = false;
+        let snapshots = [];
+
+        // Standard UART / SPP UUIDs used by HC-05 / ELM327 Bluetooth adapters
+        const UART_SERVICE_UUID = '0000ffe0-0000-1000-8000-00805f9b34fb';
+        const UART_RX_CHAR_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb';
+        const UART_TX_CHAR_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb';
+
+        // Alternative generic serial UUIDs
+        const ALT_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+        const ALT_RX_CHAR_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+        const ALT_TX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+        // Load saved snapshots on start
+        window.onload = function() {
+            const saved = localStorage.getItem('elm327_snapshots');
+            if (saved) {
+                try {
+                    snapshots = JSON.parse(saved);
+                    renderTable();
+                } catch(e) {
+                    console.error("Gagal memuat localstorage", e);
+                }
+            }
+            togglePresetFields();
+        };
+
+        function showModal(title, body, type = 'info') {
+            document.getElementById('msgTitle').innerText = title;
+            document.getElementById('msgBody').innerText = body;
+            const icon = document.getElementById('msgIcon');
+            if (type === 'error') {
+                icon.className = "w-12 h-12 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center mx-auto text-xl border border-rose-500/30";
+                icon.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+            } else {
+                icon.className = "w-12 h-12 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center mx-auto text-xl border border-blue-500/30";
+                icon.innerHTML = '<i class="fa-solid fa-info"></i>';
+            }
+            document.getElementById('msgModal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('msgModal').classList.add('hidden');
+        }
+
+        function logTerminal(text, type = 'normal') {
+            const term = document.getElementById('terminal');
+            const div = document.createElement('div');
+            let colorClass = 'text-slate-300';
+            if (type === 'rx') colorClass = 'text-emerald-400';
+            if (type === 'tx') colorClass = 'text-blue-400';
+            if (type === 'error') colorClass = 'text-rose-400';
+            if (type === 'system') colorClass = 'text-amber-400';
+
+            const time = new Date().toLocaleTimeString();
+            div.className = colorClass;
+            div.innerText = `[${time}] ${text}`;
+            term.appendChild(div);
+            term.scrollTop = term.scrollHeight;
+        }
+
+        function clearTerminal() {
+            document.getElementById('terminal').innerHTML = '<div class="text-slate-500">// Terminal dibersihkan...</div>';
+        }
+
+        function applyPreset() {
+            const val = document.getElementById('presetSelect').value;
+            const customContainer = document.getElementById('customCommandContainer');
+            if (val === 'CUSTOM') {
+                customContainer.classList.remove('hidden');
+            } else {
+                customContainer.classList.add('hidden');
+            }
+        }
+
+        function togglePresetFields() {
+            applyPreset();
+        }
+
+        // Bluetooth Connection Handling
+        async function toggleConnection() {
+            if (isConnected) {
+                disconnectBluetooth();
+            } else {
+                await connectBluetooth();
+            }
+        }
+
+        async function connectBluetooth() {
+            if (!navigator.bluetooth) {
+                showModal("Web Bluetooth Tidak Didukung", "Browser Anda tidak mendukung Web Bluetooth API. Gunakan Google Chrome atau Microsoft Edge terbaru di Desktop/Android.", "error");
+                return;
+            }
+
+            try {
+                logTerminal("Memindai perangkat Bluetooth (ELM327 / OBD2)...", "system");
+                
+                // Request device with flexible filters
+                bluetoothDevice = await navigator.bluetooth.requestDevice({
+                    filters: [
+                        { namePrefix: 'OBD' },
+                        { namePrefix: 'ELM' },
+                        { namePrefix: 'Vlink' },
+                        { namePrefix: 'CAR' },
+                        { namePrefix: 'BT' },
+                        { services: [UART_SERVICE_UUID] }
+                    ],
+                    optionalServices: [UART_SERVICE_UUID, ALT_SERVICE_UUID, '00001800-0000-1000-8000-00805f9b34fb', '00001801-0000-1000-8000-00805f9b34fb']
+                });
+
+                bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+                logTerminal(`Menghubungkan ke ${bluetoothDevice.name || 'Perangkat'}...`, "system");
+                bluetoothServer = await bluetoothDevice.gatt.connect();
+
+                logTerminal("Mencari service UART/Serial...", "system");
+                let service;
+                try {
+                    service = await bluetoothServer.getPrimaryService(UART_SERVICE_UUID);
+                    rxCharacteristic = await service.getCharacteristic(UART_RX_CHAR_UUID);
+                    txCharacteristic = await service.getCharacteristic(UART_TX_CHAR_UUID);
+                } catch (e) {
+                    logTerminal("Mencoba service alternatif...", "system");
+                    service = await bluetoothServer.getPrimaryService(ALT_SERVICE_UUID);
+                    rxCharacteristic = await service.getCharacteristic(ALT_RX_CHAR_UUID);
+                    txCharacteristic = await service.getCharacteristic(ALT_TX_CHAR_UUID);
+                }
+
+                await txCharacteristic.startNotifications();
+                txCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
+
+                isConnected = true;
+                updateConnectionUI(true);
+                logTerminal(`Berhasil terhubung ke ${bluetoothDevice.name}!`, "system");
+
+                // Initialize ELM327
+                await sendRawCommand("ATZ");
+                await sleep(500);
+                await sendRawCommand("ATE0"); // Echo off
+                await sleep(300);
+                await sendRawCommand("ATSP0"); // Auto protocol
+
+            } catch (error) {
+                console.error(error);
+                logTerminal(`Koneksi gagal: ${error.message}`, "error");
+                showModal("Koneksi Gagal", error.message, "error");
+                disconnectBluetooth();
+            }
+        }
+
+        function disconnectBluetooth() {
+            if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+                bluetoothDevice.gatt.disconnect();
+            }
+            onDisconnected();
+        }
+
+        function onDisconnected() {
+            isConnected = false;
+            updateConnectionUI(false);
+            logTerminal("Perangkat terputus.", "system");
+        }
+
+        function updateConnectionUI(connected) {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+            const btn = document.getElementById('connectBtn');
+            const btnText = document.getElementById('connectBtnText');
+            const captureBtn = document.getElementById('captureBtn');
+
+            if (connected) {
+                dot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500";
+                text.innerText = `Connected (${bluetoothDevice.name || 'ELM327'})`;
+                btn.className = "flex-1 sm:flex-none bg-rose-600 hover:bg-rose-700 active:scale-95 text-white px-4 py-2 rounded-lg font-medium text-sm transition shadow-lg shadow-rose-600/20 flex items-center justify-center gap-2";
+                btnText.innerText = "Disconnect";
+                captureBtn.removeAttribute('disabled');
+            } else {
+                dot.className = "w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse";
+                text.innerText = "Disconnected";
+                btn.className = "flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 active:scale-95 text-white px-4 py-2 rounded-lg font-medium text-sm transition shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2";
+                btnText.innerText = "Connect OBD2";
+                captureBtn.setAttribute('disabled', 'true');
+            }
+        }
+
+        function handleNotifications(event) {
+            const value = event.target.value;
+            const decoder = new TextDecoder('utf-8');
+            const chunk = decoder.decode(value);
+            readBuffer += chunk;
+
+            // ELM327 usually responds until '>' prompt character
+            if (readBuffer.includes('>')) {
+                const response = readBuffer.trim();
+                readBuffer = "";
+                logTerminal(`RX: ${response}`, "rx");
+                window.lastObdResponse = response;
+            }
+        }
+
+        async function sendRawCommand(cmd) {
+            if (!isConnected || !rxCharacteristic) return;
+            window.lastObdResponse = null;
+            readBuffer = "";
+            
+            const encoder = new TextEncoder();
+            const commandStr = cmd + "\r";
+            logTerminal(`TX: ${cmd}`, "tx");
+            
+            await rxCharacteristic.writeValue(encoder.encode(commandStr));
+            
+            // Wait up to 1.5 seconds for prompt '>'
+            let elapsed = 0;
+            while (!window.lastObdResponse && elapsed < 1500) {
+                await sleep(100);
+                elapsed += 100;
+            }
+            return window.lastObdResponse || "TIMEOUT / NO RESPONSE";
+        }
+
+        // Capture Snapshot Logic
+        async function captureSnapshot() {
+            if (!isConnected) {
+                showModal("Belum Terhubung", "Silakan hubungkan perangkat ELM327 terlebih dahulu.", "error");
+                return;
+            }
+
+            const condition = document.getElementById('conditionSelect').value;
+            let preset = document.getElementById('presetSelect').value;
+            let command = preset;
+            if (preset === 'CUSTOM') {
+                command = document.getElementById('customInput').value.trim().toUpperCase();
+                if (!command) {
+                    showModal("Error", "Masukkan perintah custom AT / PID terlebih dahulu.", "error");
+                    return;
+                }
+            }
+
+            const captureBtn = document.getElementById('captureBtn');
+            captureBtn.setAttribute('disabled', 'true');
+            captureBtn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Mengambil Data...';
+
+            try {
+                logTerminal(`Memulai capture snapshot untuk kondisi: [${condition}] dengan command [${command}]`, "system");
+                const response = await sendRawCommand(command);
+
+                const analysis = parseObdResponse(command, response);
+
+                const snapshot = {
+                    id: Date.now(),
+                    timestamp: new Date().toLocaleString(),
+                    condition: condition,
+                    command: command,
+                    response: response,
+                    analysis: analysis
+                };
+
+                snapshots.unshift(snapshot);
+                localStorage.setItem('elm327_snapshots', JSON.stringify(snapshots));
+                renderTable();
+                logTerminal(`Snapshot berhasil disimpan.`, "system");
+
+            } catch (err) {
+                console.error(err);
+                logTerminal(`Gagal capture: ${err.message}`, "error");
+                showModal("Gagal Capture", err.message, "error");
+            } finally {
+                captureBtn.removeAttribute('disabled');
+                captureBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Capture Snapshot Kondisi';
+            }
+        }
+
+        function parseObdResponse(cmd, resp) {
+            if (!resp || resp.includes('ERROR') || resp.includes('NO DATA') || resp.includes('TIMEOUT')) {
+                return 'Respon tidak valid / Error / No Data';
+            }
+
+            // Clean up prompt characters and newlines
+            const clean = resp.replace(/>/g, '').trim();
+
+            if (cmd === '010C' && clean.includes('41 0C')) {
+                // RPM formula: ((A*256)+B)/4
+                const parts = clean.split(/\s+/);
+                if (parts.length >= 4) {
+                    const A = parseInt(parts[2], 16);
+                    const B = parseInt(parts[3], 16);
+                    const rpm = Math.round(((A * 256) + B) / 4);
+                    return `RPM: ${rpm} RPM (A=${parts[2]}, B=${parts[3]})`;
+                }
+            } else if (cmd === '010D' && clean.includes('41 0D')) {
+                // Speed formula: A km/h
+                const parts = clean.split(/\s+/);
+                if (parts.length >= 3) {
+                    const speed = parseInt(parts[2], 16);
+                    return `Speed: ${speed} km/h`;
+                }
+            } else if (cmd === '0105' && clean.includes('41 05')) {
+                // Coolant Temp formula: A - 40 °C
+                const parts = clean.split(/\s+/);
+                if (parts.length >= 3) {
+                    const temp = parseInt(parts[2], 16) - 40;
+                    return `Coolant Temp: ${temp} °C`;
+                }
+            } else if (cmd === '0104' && clean.includes('41 04')) {
+                // Engine Load formula: (A * 100) / 255
+                const parts = clean.split(/\s+/);
+                if (parts.length >= 3) {
+                    const load = Math.round((parseInt(parts[2], 16) * 100) / 255);
+                    return `Engine Load: ${load}%`;
+                }
+            }
+
+            return `Raw Hex: ${clean}`;
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('snapshotTableBody');
+            document.getElementById('snapshotCount').innerText = `Total snapshot: ${snapshots.length}`;
+
+            if (snapshots.length === 0) {
+                tbody.innerHTML = `
+                    <tr id="emptyRow">
+                        <td colspan="6" class="p-8 text-center text-slate-500 font-sans">
+                            Belum ada data snapshot. Hubungkan perangkat dan lakukan capture.
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            let html = '';
+            snapshots.forEach((s) => {
+                let badgeColor = 'bg-slate-700 text-slate-300';
+                if (s.condition === 'Mesin Mati') badgeColor = 'bg-rose-500/20 text-rose-400 border border-rose-500/30';
+                if (s.condition === 'Idle') badgeColor = 'bg-amber-500/20 text-amber-400 border border-amber-500/30';
+                if (s.condition === 'Digas') badgeColor = 'bg-blue-500/20 text-blue-400 border border-blue-500/30';
+                if (s.condition === 'Jalan') badgeColor = 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+
+                html += `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-3 text-slate-400 text-xs">${s.timestamp}</td>
+                        <td class="p-3"><span class="px-2 py-1 rounded-md text-xs font-semibold font-sans ${badgeColor}">${s.condition}</span></td>
+                        <td class="p-3 font-bold text-blue-400">${s.command}</td>
+                        <td class="p-3 text-slate-200">${escapeHtml(s.response)}</td>
+                        <td class="p-3 text-emerald-400 font-sans text-xs">${escapeHtml(s.analysis)}</td>
+                        <td class="p-3 text-center">
+                            <button onclick="deleteSnapshot(${s.id})" class="text-rose-400 hover:text-rose-300 p-1 transition" title="Hapus">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        }
+
+        function deleteSnapshot(id) {
+            snapshots = snapshots.filter(s => s.id !== id);
+            localStorage.setItem('elm327_snapshots', JSON.stringify(snapshots));
+            renderTable();
+            logTerminal(`Snapshot ID ${id} dihapus.`, "system");
+        }
+
+        function clearSnapshots() {
+            if (confirm('Yakin ingin menghapus seluruh riwayat snapshot?')) {
+                snapshots = [];
+                localStorage.removeItem('elm327_snapshots');
+                renderTable();
+                logTerminal("Seluruh snapshot dibersihkan.", "system");
+            }
+        }
+
+        // Export to CSV
+        function exportCSV() {
+            if (snapshots.length === 0) {
+                showModal("Data Kosong", "Tidak ada snapshot untuk diexport ke CSV.", "error");
+                return;
+            }
+
+            let csvContent = "ID,Timestamp,Kondisi,Command,Response,Analysis\r\n";
+            snapshots.forEach(s => {
+                const cleanResp = s.response.replace(/"/g, '""').replace(/\n/g, ' ');
+                const cleanAnal = s.analysis.replace(/"/g, '""');
+                csvContent += `"${s.id}","${s.timestamp}","${s.condition}","${s.command}","${cleanResp}","${cleanAnal}"\r\n`;
+            });
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('href', url);
+            a.setAttribute('download', `elm327_snapshots_${Date.now()}.csv`);
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            logTerminal("Data berhasil diexport ke CSV.", "system");
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+    </script>
+</body>
+</html>
