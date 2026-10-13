@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>OBD-II Capture</title>
+</head>
+<body>
+  <h2>OBD-II Snapshot Capture</h2>
+
+  <!-- Dropdown kondisi -->
+  <label for="condition">Pilih Kondisi:</label>
+  <select id="condition">
+    <option value="mati">Mesin Mati</option>
+    <option value="idle">Idle</option>
+    <option value="gas">Idle + Gas</option>
+    <option value="jalan">Mobil Jalan</option>
+  </select>
+
+  <button id="connectBtn">Connect ELM327</button>
+  <button id="captureBtn">Capture Data</button>
+
+  <pre id="output"></pre>
+
+<script>
+let device, server, service, characteristic;
+let lastData = "";
+
+async function connectELM327() {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: ['0000ffe0-0000-1000-8000-00805f9b34fb'] // service ELM327 clone
+    });
+    server = await device.gatt.connect();
+    service = await server.getPrimaryService('0000ffe0-0000-1000-8000-00805f9b34fb');
+    characteristic = await service.getCharacteristic('0000ffe1-0000-1000-8000-00805f9b34fb');
+
+    // listen data
+    characteristic.startNotifications();
+    characteristic.addEventListener('characteristicvaluechanged', handleData);
+
+    document.getElementById("output").textContent = "Connected to ELM327!";
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function handleData(event) {
+  const value = event.target.value;
+  let decoder = new TextDecoder("utf-8");
+  lastData = decoder.decode(value);
+}
+
+function captureData() {
+  const condition = document.getElementById("condition").value;
+  const output = document.getElementById("output");
+  output.textContent += `\n[${condition}] → ${lastData}`;
+}
+
+document.getElementById("connectBtn").addEventListener("click", connectELM327);
+document.getElementById("captureBtn").addEventListener("click", captureData);
+</script>
+</body>
+</html>

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ELM327 Snapshot</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mut:#6b7380;--bd:#dfe3e8;--ac:#0b6bcb;--ok:#1a8f4c;--df:#ffe08a;--dft:#5a4300}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--card:#1d2026;--tx:#e8eaed;--mut:#98a0ac;--bd:#2d323b;--ac:#5aa8ff;--ok:#4cc27f;--df:#6b5200;--dft:#ffe08a}}
+:root[data-theme="dark"]{--bg:#14161a;--card:#1d2026;--tx:#e8eaed;--mut:#98a0ac;--bd:#2d323b;--ac:#5aa8ff;--ok:#4cc27f;--df:#6b5200;--dft:#ffe08a}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*:before,*:after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:0 0 10px}
+p.s{color:var(--mut);margin:0 0 14px;font-size:13px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,select{font:inherit;padding:9px 14px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--tx)}
+button.p{background:var(--ac);border-color:var(--ac);color:#fff;font-weight:600}
+button:disabled{opacity:.45}
+.st{font-size:13px;color:var(--mut)}.st.on{color:var(--ok);font-weight:600}
+.sc{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+td.hx,.mono{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
+.d{background:var(--df);color:var(--dft);border-radius:3px;padding:0 2px}
+#log{height:110px;overflow:auto;font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap}
+.dec{color:var(--mut);font-size:12px}
+</style>
+</head>
+<body>
+<main>
+<h1>ELM327 Snapshot per Kondisi</h1>
+<p class="s">Capture satu snapshot hex per kondisi (bukan stream). Perlu Chrome/Edge + adapter ELM327 <b>BLE</b>.</p>
+
+<div class="card">
+  <div class="row">
+    <button id="bConn" class="p">Hubungkan ELM327</button>
+    <span id="st" class="st">Belum terhubung</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Capture</h2>
+  <div class="row">
+    <select id="cond">
+      <option>Mesin Mati</option><option>Idle</option><option>Gas</option><option>Jalan</option>
+    </select>
+    <button id="bCap" class="p" disabled>Capture Data</button>
+    <button id="bClr">Hapus semua</button>
+    <button id="bCsv">Export CSV</button>
+  </div>
+  <p class="s" style="margin:10px 0 0">Satu capture = kirim PID: 0104, 0105, 010B, 010C, 010D, 010F, 0111 sekali, simpan balasan hex mentah.</p>
+</div>
+
+<div class="card">
+  <h2>Data tersimpan</h2>
+  <div class="sc"><table><thead><tr><th>Kondisi</th><th>Waktu</th><th>Hex (PID:balasan)</th><th></th></tr></thead><tbody id="tb"></tbody></table></div>
+</div>
+
+<div class="card">
+  <h2>Bandingkan</h2>
+  <div class="row"><select id="sa"></select><span>vs</span><select id="sb"></select><button id="bCmp">Bandingkan</button></div>
+  <div class="sc" style="margin-top:10px"><table><thead><tr><th>PID</th><th>A</th><th>B</th><th>Dekode</th></tr></thead><tbody id="diff"></tbody></table></div>
+</div>
+
+<div class="card"><h2>Log</h2><div id="log"></div></div>
+</main>
+
+<script>
+const PIDS=['0104','0105','010B','010C','010D','010F','0111'];
+const NAMES={'0104':'Beban mesin','0105':'Suhu coolant','010B':'MAP','010C':'RPM','010D':'Kecepatan','010F':'Suhu intake','0111':'Throttle'};
+const PROFILES=[
+ {s:0xFFF0,n:0xFFF1,w:0xFFF2},
+ {s:0xFFE0,n:0xFFE1,w:0xFFE1},
+ {s:0x18F0,n:0x2AF0,w:0x2AF1},
+ {s:'6e400001-b5a3-f393-e0a9-e50e24dcca9e',n:'6e400003-b5a3-f393-e0a9-e50e24dcca9e',w:'6e400002-b5a3-f393-e0a9-e50e24dcca9e'},
+ {s:'e7810a71-73ae-499d-8c15-faa9aef0c3f2',n:'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f',w:'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f'}
+];
+const $=id=>document.getElementById(id);
+let rows=[],wChar=null,buf='',waiter=null,dev=null;
+const enc=new TextEncoder(),dec=new TextDecoder();
+
+function log(t){const l=$('log');l.textContent+=t+'\n';l.scrollTop=l.scrollHeight}
+function save(){try{localStorage.setItem('elm_rows',JSON.stringify(rows))}catch(e){}}
+function load(){try{rows=JSON.parse(localStorage.getItem('elm_rows')||'[]')}catch(e){rows=[]}}
+
+function onNotify(e){
+  buf+=dec.decode(e.target.value);
+  if(buf.includes('>')&&waiter){const w=waiter;waiter=null;w(buf)}
+}
+async function send(cmd,ms=5000){
+  buf='';
+  const p=new Promise((res,rej)=>{
+    waiter=res;
+    setTimeout(()=>{if(waiter===res){waiter=null;rej(new Error('timeout '+cmd))}},ms);
+  });
+  const data=enc.encode(cmd+'\r');
+  for(let i=0;i<data.length;i+=20){
+    const c=data.slice(i,i+20);
+    if(wChar.writeValueWithoutResponse)await wChar.writeValueWithoutResponse(c);else await wChar.writeValue(c);
+  }
+  const r=await p;
+  log('> '+cmd+'  < '+r.replace(/[\r\n]+/g,' ').trim());
+  return r;
+}
+const clean=r=>r.replace(/SEARCHING\.\.\./g,'').replace(/[>\s\r\n]/g,'').toUpperCase();
+
+async function connect(){
+  try{
+    if(!navigator.bluetooth){alert('Browser tidak mendukung Web Bluetooth. Pakai Chrome/Edge.');return}
+    const opt=PROFILES.map(p=>p.s);
+    dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:opt});
+    dev.addEventListener('gattserverdisconnected',()=>setSt(false,'Terputus'));
+    setSt(false,'Menghubungkan...');
+    const srv=await dev.gatt.connect();
+    let ok=false;
+    for(const p of PROFILES){
+      try{
+        const s=await srv.getPrimaryService(p.s);
+        const n=await s.getCharacteristic(p.n);
+        wChar=p.w===p.n?n:await s.getCharacteristic(p.w);
+        await n.startNotifications();
+        n.addEventListener('characteristicvaluechanged',onNotify);
+        ok=true;break;
+      }catch(e){}
+    }
+    if(!ok)throw new Error('Service UART tidak ditemukan (adapter mungkin bukan BLE)');
+    for(const c of ['ATZ','ATE0','ATL0','ATS0','ATH0','ATSP0'])await send(c,c==='ATZ'?8000:4000);
+    setSt(true,'Terhubung: '+(dev.name||'ELM327'));
+  }catch(e){log('ERR '+e.message);setSt(false,'Gagal: '+e.message)}
+}
+function setSt(on,t){$('st').textContent=t;$('st').className='st'+(on?' on':'');$('bCap').disabled=!on}
+
+async function capture(){
+  $('bCap').disabled=true;
+  const label=$('cond').value,data={};
+  try{
+    for(const pid of PIDS){
+      try{data[pid]=clean(await send(pid))}catch(e){data[pid]='TIMEOUT'}
+    }
+    rows.push({id:Date.now(),label,time:new Date().toLocaleString('id-ID'),data});
+    save();render();
+  }finally{$('bCap').disabled=!(dev&&dev.gatt.connected)}
+}
+
+function render(){
+  $('tb').innerHTML=rows.map((r,i)=>`<tr><td>${r.label}</td><td>${r.time}</td><td class="hx">${PIDS.map(p=>p+':'+(r.data[p]||'-')).join(' | ')}</td><td><button onclick="del(${i})">✕</button></td></tr>`).join('')||'<tr><td colspan="4" class="st">Belum ada data.</td></tr>';
+  const o=rows.map((r,i)=>`<option value="${i}">#${i+1} ${r.label}</option>`).join('');
+  const a=$('sa').value,b=$('sb').value;
+  $('sa').innerHTML=o;$('sb').innerHTML=o;
+  if(a)$('sa').value=a;if(b)$('sb').value=b;
+  else if(rows.length>1)$('sb').value=rows.length-1;
+}
+function del(i){rows.splice(i,1);save();render()}
+
+function bytes(hex,pid){
+  const h='41'+pid.slice(2);const k=hex.indexOf(h);
+  const d=k>=0?hex.slice(k+4):hex;
+  return d.match(/.{1,2}/g)||[];
+}
+function decode(pid,b){
+  const n=b.map(x=>parseInt(x,16));if(n.some(isNaN)||!n.length)return '';
+  switch(pid){
+    case '0104':return (n[0]*100/255).toFixed(1)+' %';
+    case '0105':case '010F':return (n[0]-40)+' °C';
+    case '010B':return n[0]+' kPa';
+    case '010C':return n.length>1?((n[0]*256+n[1])/4)+' rpm':'';
+    case '010D':return n[0]+' km/h';
+    case '0111':return (n[0]*100/255).toFixed(1)+' %';
+  }return '';
+}
+function compare(){
+  const A=rows[$('sa').value],B=rows[$('sb').value];if(!A||!B)return;
+  $('diff').innerHTML=PIDS.map(p=>{
+    const a=bytes(A.data[p]||'',p),b=bytes(B.data[p]||'',p),m=Math.max(a.length,b.length);
+    const f=(x,y)=>Array.from({length:m},(_,i)=>x[i]===y[i]?(x[i]||'--'):`<span class="d">${x[i]||'--'}</span>`).join(' ');
+    return `<tr><td>${p}<div class="dec">${NAMES[p]}</div></td><td class="hx">${f(a,b)}</td><td class="hx">${f(b,a)}</td><td class="dec">${decode(p,a)||'-'} → ${decode(p,b)||'-'}</td></tr>`;
+  }).join('');
+}
+function csv(){
+  if(!rows.length)return;
+  const q=s=>'"'+String(s).replace(/"/g,'""')+'"';
+  const out=[['kondisi','waktu',...PIDS].map(q).join(',')];
+  rows.forEach(r=>out.push([r.label,r.time,...PIDS.map(p=>r.data[p]||'')].map(q).join(',')));
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([out.join('\n')],{type:'text/csv'}));
+  a.download='elm327_snapshot.csv';document.body.appendChild(a);a.click();a.remove();
+}
+
+$('bConn').onclick=connect;$('bCap').onclick=capture;$('bCmp').onclick=compare;$('bCsv').onclick=csv;
+$('bClr').onclick=()=>{if(confirm('Hapus semua data?')){rows=[];save();render();$('diff').innerHTML=''}};
+load();render();
+</script>
+</body>
+</html>

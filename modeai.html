@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OBD2 ELM327 Snapshot Capturer</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 20px auto; padding: 20px; background-color: #f4f4f9; }
+        h2 { color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        label, select, button { display: block; width: 100%; margin-top: 10px; padding: 10px; font-size: 16px; border-radius: 5px; box-sizing: border-box; }
+        button { background-color: #007bff; color: white; border: none; cursor: pointer; font-weight: bold; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #disconnectBtn { background-color: #dc3545; margin-top: 10px; display: none; }
+        #log { background: #222; color: #00ff00; padding: 15px; border-radius: 5px; font-family: monospace; height: 200px; overflow-y: auto; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+
+    <h2>OBD2 Snapshot Capturer</h2>
+    
+    <div class="card">
+        <button id="connectBtn">🔌 Hubungkan ELM327 (Bluetooth)</button>
+        <button id="disconnectBtn">❌ Putuskan Koneksi</button>
+    </div>
+
+    <div class="card">
+        <label for="kondisi"><strong>1. Pilih Kondisi Kendaraan:</strong></label>
+        <select id="kondisi">
+            <option value="MESIN_MATI">Mesin Mati (Kontak ON)</option>
+            <option value="IDLE">Idle (Langsam)</option>
+            <option value="DIGAS">Digas (RPM Tinggi / Diam)</option>
+            <option value="JALAN">Jalan (Berjalan Konstan)</option>
+        </select>
+
+        <label for="command"><strong>2. Pilih Perintah PID:</strong></label>
+        <select id="command">
+            <option value="\(01 0C\r\)">01 0C (Cek RPM)</option>
+            <option value="\(01 0D\r\)">01 0D (Cek Kecepatan)</option>
+            <option value="\(01 00\r\)">01 00 (Cek Supported PIDs)</option>
+        </select>
+
+        <button id="captureBtn" disabled style="background-color: #28a745; margin-top: 20px;">📸 Ambil Snapshot Hex</button>
+    </div>
+
+    <div class="card">
+        <strong>📟 Log Hasil Snapshot:</strong>
+        <div id="log">Belum ada data. Silakan hubungkan perangkat...</div>
+    </div>
+
+    <script>
+        let device = null;
+        let characteristicTxRx = null; // ELM327 biasanya pakai 1 karakteristik untuk TX/RX (SPP Profile)
+        
+        // UUID standar untuk Bluetooth Serial (SPP) yang biasa dipakai ELM327 clone
+        const SPP_SERVICE_UUID = '00001101-0000-1000-8000-00805f9b34fb';
+        const SPP_CHARACTERISTIC_UUID = '00001101-0000-1000-8000-00805f9b34fb';
+
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const captureBtn = document.getElementById('captureBtn');
+        const kondisiSelect = document.getElementById('kondisi');
+        const cmdSelect = document.getElementById('command');
+        const logDiv = document.getElementById('log');
+
+        function log(msg) {
+            logDiv.innerText += `\n${msg}`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        // 1. Fungsi Hubungkan ke ELM327 via Bluetooth
+        connectBtn.addEventListener('click', async () => {
+            logDiv.innerText = "Memulai pencarian perangkat Bluetooth...";
+            try {
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [SPP_SERVICE_UUID] }],
+                    // Jika ELM327 Anda pakai nama spesifik, bisa ganti pakai optionalServices / nameFilters
+                });
+
+                log(`Menghubungkan ke: ${device.name}`);
+                const server = await device.gatt.connect();
+                
+                log("Mendapatkan Service...");
+                const service = await server.getPrimaryService(SPP_SERVICE_UUID);
+                
+                log("Mendapatkan Karakteristik...");
+                characteristicTxRx = await service.getCharacteristic(SPP_CHARACTERISTIC_UUID);
+
+                // Aktifkan notifikasi untuk membaca balasan dari ELM327
+                await characteristicTxRx.startNotifications();
+                characteristicTxRx.addEventListener('characteristicvaluechanged', handleDataMasuk);
+
+                log("✅ Terhubung! Siap mengambil snapshot.");
+                connectBtn.style.display = 'none';
+                disconnectBtn.style.display = 'block';
+                captureBtn.disabled = false;
+
+                // Inisialisasi awal kirim command "AT Z" (Reset) ke ELM327
+                kirimPerintah("AT Z\(\r\)");
+
+            } catch (error) {
+                log(`❌ Gagal terhubung: ${error.message}`);
+                console.error(error);
+            }
+        });
+
+        // 2. Handler saat ELM327 mengirimkan data balik (Hex)
+        function handleDataMasuk(event) {
+            const value = event.target.value;
+            let decoder = new TextDecoder('utf-8');
+            let textData = decoder.decode(value).trim();
+            
+            // Mengubah buffer data langsung menjadi format string Hex murni agar mudah dianalisis
+            let hexArray = [];
+            for (let i = 0; i < value.byteLength; i++) {
+                let hex = value.getUint8(i).toString(16).toUpperCase().padStart(2, '0');
+                hexArray.push(hex);
+            }
+            let hexString = hexArray.join(' ');
+
+            const kondisi = kondisiSelect.value;
+            const waktu = new Date().toLocaleTimeString();
+
+            log(`\n📥 [${waktu}] Kondisi: ${kondisi}\n🔹 ASCII: ${textData}\n🔸 HEX Murni: ${hexString}\n-------------------`);
+        }
+
+        // 3. Fungsi Kirim Perintah ke ELM327
+        async function kirimPerintah(cmdStr) {
+            if (!characteristicTxRx) return;
+            let encoder = new TextEncoder();
+            let dataBuffer = encoder.encode(cmdStr);
+            await characteristicTxRx.writeValue(dataBuffer);
+        }
+
+        // 4. Tombol Ambil Snapshot (Kirim PID berdasarkan pilihan)
+        captureBtn.addEventListener('click', async () => {
+            const selectedCmd = cmdSelect.value;
+            const kondisi = kondisiSelect.value;
+            log(`▶️ Mengirim perintah untuk kondisi [${kondisi}]...`);
+            
+            try {
+                await kirimPerintah(selectedCmd);
+            } catch (error) {
+                log(`❌ Gagal kirim perintah: ${error.message}`);
+            }
+        });
+
+        // 5. Putuskan Koneksi
+        disconnectBtn.addEventListener('click', () => {
+            if (device && device.gatt.connected) {
+                device.gatt.disconnect();
+                log("🔌 Koneksi diputuskan.");
+                connectBtn.style.display = 'block';
+                disconnectBtn.style.display = 'none';
+                captureBtn.disabled = true;
+            }
+        });
+    </script>
+</body>
+</html>
